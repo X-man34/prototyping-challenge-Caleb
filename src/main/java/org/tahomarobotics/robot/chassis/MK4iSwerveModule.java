@@ -20,10 +20,18 @@ package org.tahomarobotics.robot.chassis;
 
 import com.ctre.phoenix.ErrorCode;
 import com.ctre.phoenix.motorcontrol.NeutralMode;
+import com.ctre.phoenix.motorcontrol.TalonFXControlMode;
 import com.ctre.phoenix.motorcontrol.can.TalonFX;
 import com.ctre.phoenix.sensors.CANCoder;
+import edu.wpi.first.math.controller.PIDController;
+import edu.wpi.first.math.controller.SimpleMotorFeedforward;
+import edu.wpi.first.math.geometry.Rotation2d;
 import edu.wpi.first.math.geometry.Translation2d;
+import edu.wpi.first.math.kinematics.SwerveModulePosition;
+import edu.wpi.first.math.kinematics.SwerveModuleState;
 import edu.wpi.first.math.util.Units;
+import edu.wpi.first.wpilibj.DriverStation;
+import edu.wpi.first.wpilibj.RobotController;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -40,6 +48,12 @@ public class MK4iSwerveModule {
     private final String name;
     private final TalonFX driveMotor;
     private final TalonFX steerMotor;
+
+    private int restInteation = MK4iChassisConstants.ENCODER_RESET_ITERATIONS;
+    private final PIDController pidController = new PIDController(0,0,0);
+
+    private final SimpleMotorFeedforward simpleMotorFeedforward = new SimpleMotorFeedforward(0, MK4iChassisConstants.kV_DRIVE);
+    private SwerveModuleState state = new SwerveModuleState();
     private final CANCoder steerABSEncoder;
     private double angularOffset;
 
@@ -116,4 +130,69 @@ public class MK4iSwerveModule {
     public double getSteerAngle() {
         return steerMotor.getSelectedSensorPosition() * MK4iChassisConstants.STEER_POSITION_COEFFICIENT;
     }
+
+    public SwerveModulePosition getPosition() {
+        return new SwerveModulePosition(driveMotor.getSelectedSensorPosition(), new Rotation2d(getSteerAngle()));
+    }
+
+    public void setDesiredState(SwerveModuleState desiredState) {
+        double steerAngle = getSteerAngle();
+        //set the state depending on if we should go one way or another
+        state = SwerveModuleState.optimize(desiredState, new Rotation2d(steerAngle));
+
+        //calculate output velocityes
+        final double driveOutput = pidController.calculate(getVelocity(), state.speedMetersPerSecond);
+        final double driveFeedForeward = this.simpleMotorFeedforward.calculate(state.speedMetersPerSecond);
+
+        setDriveVoltage(driveOutput + driveFeedForeward);
+
+        setReferenceAngle(state.angle.getRadians());
+
+    }
+
+    private void setReferenceAngle(double referenceAngle) {
+
+        double currentAngle = getSteerAngle();
+
+        if (Math.abs(getSteerVelocity()) < MK4iChassisConstants.ENCODER_RESET_MAX_ANGULAR_VELOCITY) {
+            if (++restInteation >= MK4iChassisConstants.ENCODER_RESET_ITERATIONS) {
+                restInteation = 0;
+                double absAngle = getAbsoluteAngle();
+                steerMotor.setSelectedSensorPosition(absAngle);
+                currentAngle = absAngle;
+            }
+        }else {
+             restInteation = 0;
+        }
+
+        double currentAngleMod = currentAngle % (2 * Math.PI);
+        if (currentAngleMod < 0) {
+            currentAngleMod += 2 * Math.PI;
+        }
+
+        double adjustedReferenceAngle = referenceAngle + currentAngle - currentAngleMod;
+        if (referenceAngle - currentAngleMod > Math.PI) {
+            adjustedReferenceAngle -= 2.0 * Math.PI;
+        } else if (referenceAngle - currentAngleMod < -Math.PI) {
+            adjustedReferenceAngle += 2.0 * Math.PI;
+        }
+
+        //pidController.set
+    }
+
+
+    private void setDriveVoltage(double voltage) {
+        driveMotor.set(TalonFXControlMode.PercentOutput, voltage / RobotController.getBatteryVoltage());
+    }
+    private double getVelocity() {
+        return driveMotor.getSelectedSensorVelocity();
+    }
+
+    private double getSteerVelocity() {
+        return steerMotor.getSelectedSensorVelocity();
+    }
+
+
+
+
 }
